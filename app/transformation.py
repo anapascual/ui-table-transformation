@@ -1,5 +1,14 @@
 import pandas as pd
 
+# One more thing to watch
+
+# Your schedule.csv has:
+
+# 988 rows
+# only 824 non-empty Input date values
+
+# So some schedule rows have no entry date at all. Those rows will stay in the output, but they won’t find a matching answer, which is probably fine.
+
 def process_files(schedule_file, answers_file, output_file=None):
     schedule = pd.read_csv(schedule_file)
     answers = pd.read_csv(answers_file)
@@ -7,10 +16,8 @@ def process_files(schedule_file, answers_file, output_file=None):
     if "Input date" in schedule.columns:
         schedule = schedule.rename(columns={"Input date": "Entry Date"})
 
-    final_table = pd.merge(schedule, answers, on="Entry Date", how="left")
-
-    final_table = final_table.loc[:, ~final_table.columns.str.endswith("_y")]
-    final_table.columns = final_table.columns.str.replace("_x", "", regex=False)
+    merge_columns = ["Patient ID", "Pathway Name", "Content Name", "Entry Date"]
+    final_table = pd.merge(schedule, answers, on=merge_columns, how="left")
 
     if "Answer Value" in final_table.columns or "Answer Text" in final_table.columns:
         answer_value = (
@@ -27,7 +34,7 @@ def process_files(schedule_file, answers_file, output_file=None):
 
     id_columns = [
         col
-        for col in ["Patient ID", "Pathway Name", "Content Name", "Scheduled date", "Entry Date"]
+        for col in ["Patient ID", "Pathway Name", "Pathway_ID", "Content Name", "Scheduled date", "Entry Date"]
         if col in final_table.columns
     ]
 
