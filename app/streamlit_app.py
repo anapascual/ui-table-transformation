@@ -1,5 +1,15 @@
 import streamlit as st
-from transformation import process_files
+from transformation import process_files_generic
+from configs import MEDTRONIC_CONFIG
+
+
+def process_files(schedule_file, answers_file, output_file=None):
+    return process_files_generic(
+        left_file=schedule_file,
+        right_file=answers_file,
+        config=MEDTRONIC_CONFIG,
+        output_file=output_file,
+    )
 
 st.set_page_config(
     page_title="UI Table Transformation",
@@ -114,11 +124,11 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.markdown("### Schedule file")
-    schedule_file = st.file_uploader("Upload schedule.csv", type=["csv"], key="schedule")
+    schedule_file = st.file_uploader("Upload schedule file", type=["csv", "xlsx"], key="schedule")
 
 with col2:
     st.markdown("### Answers file")
-    answers_file = st.file_uploader("Upload answers.csv", type=["csv"], key="answers")
+    answers_file = st.file_uploader("Upload answers file", type=["csv", "xlsx"], key="answers")
 
 # ---- Status info ----
 if schedule_file is not None and answers_file is not None:

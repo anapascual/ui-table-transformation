@@ -1,62 +1,88 @@
 import pandas as pd
+from pathlib import Path
 
-# One more thing to watch
 
-# Your schedule.csv has:
+def read_input_file(file):
+    file_name = file if isinstance(file, str) else getattr(file, "name", "")
+    suffix = Path(file_name).suffix.lower()
 
-# 988 rows
-# only 824 non-empty Input date values
+    if suffix == ".csv":
+        return pd.read_csv(file)
+    elif suffix in [".xlsx", ".xls"]:
+        return pd.read_excel(file, header=2)
+    else:
+        raise ValueError(f"Unsupported file format: {suffix}")
 
-# So some schedule rows have no entry date at all. Those rows will stay in the output, but they won’t find a matching answer, which is probably fine.
 
-def process_files(schedule_file, answers_file, output_file=None):
-    schedule = pd.read_csv(schedule_file)
-    answers = pd.read_csv(answers_file)
+def combine_value_columns(df, value_priority, output_column="Value_Combined"):
+    df[output_column] = pd.NA
 
-    if "Input date" in schedule.columns:
-        schedule = schedule.rename(columns={"Input date": "Entry Date"})
+    for col in value_priority:
+        if col in df.columns:
+            if df[output_column].isna().all():
+                df[output_column] = df[col]
+            else:
+                df[output_column] = df[output_column].fillna(df[col])
 
-    merge_columns = ["Patient ID", "Pathway Name", "Content Name", "Entry Date"]
-    final_table = pd.merge(schedule, answers, on=merge_columns, how="left")
+    return df
 
-    if "Answer Value" in final_table.columns or "Answer Text" in final_table.columns:
-        answer_value = (
-            final_table["Answer Value"]
-            if "Answer Value" in final_table.columns
-            else pd.Series(index=final_table.index, dtype="object")
-        )
-        answer_text = (
-            final_table["Answer Text"]
-            if "Answer Text" in final_table.columns
-            else pd.Series(index=final_table.index, dtype="object")
-        )
-        final_table["Answer_Combined"] = answer_value.fillna(answer_text)
 
-    id_columns = [
-        col
-        for col in ["Patient ID", "Pathway Name", "Pathway_ID", "Content Name", "Scheduled date", "Entry Date"]
-        if col in final_table.columns
-    ]
+def process_files_generic(left_file, right_file, config, output_file=None):
+    left_df = read_input_file(left_file)
+    right_df = read_input_file(right_file)
 
-    if "Question" in final_table.columns and "Answer_Combined" in final_table.columns:
-        pivot_table = final_table.pivot_table(
-            index=id_columns,
-            columns="Question",
-            values="Answer_Combined",
-            aggfunc="first"
-        ).reset_index()
+    if config.get("rename_left"):
+        left_df = left_df.rename(columns=config["rename_left"])
 
-        pivot_table.columns.name = None
-        final_table = pivot_table
+    if config.get("rename_right"):
+        right_df = right_df.rename(columns=config["rename_right"])
 
-    sort_cols = [col for col in ["Patient ID", "Scheduled date", "Entry Date"] if col in final_table.columns]
-    if sort_cols:
-        final_table = final_table.sort_values(by=sort_cols).reset_index(drop=True)
+    merge_on = config["merge_on"]
 
-    if "Patient ID" in final_table.columns:
-        final_table["Iteration"] = final_table.groupby("Patient ID").cumcount() + 1
+    for col in merge_on:
+        if col in left_df.columns:
+            left_df[col] = pd.to_datetime(left_df[col], errors="ignore")
+        if col in right_df.columns:
+            right_df[col] = pd.to_datetime(right_df[col], errors="ignore")
+
+    merged = pd.merge(left_df, right_df, on=merge_on, how="left")
+
+    selected_cols = config.get("selected_columns_after_merge")
+    if selected_cols:
+        merged = merged[selected_cols].copy()
+
+    rename_after_merge = config.get("rename_after_merge")
+    if rename_after_merge:
+        merged = merged.rename(columns=rename_after_merge)
+
+    merged = combine_value_columns(
+        merged,
+        value_priority=config["value_priority"],
+        output_column="Value_Combined"
+    )
+
+    id_columns = config["id_columns"]
+    field_column = config["field_column"]
+
+    base = merged[id_columns].drop_duplicates()
+
+    wide = merged.pivot_table(
+        index=id_columns,
+        columns=field_column,
+        values="Value_Combined",
+        aggfunc="first"
+    ).reset_index()
+
+    wide.columns.name = None
+
+    final = base.merge(wide, on=id_columns, how="left")
+
+    sort_columns = [col for col in config.get("sort_columns", []) if col in final.columns]
+    if sort_columns:
+        final = final.sort_values(sort_columns).reset_index(drop=True)
+        final = final.where(pd.notna(final), "")
 
     if output_file:
-        final_table.to_csv(output_file, index=False)
+        final.to_csv(output_file, index=False, encoding="utf-8-sig")
 
-    return final_table
+    return final
