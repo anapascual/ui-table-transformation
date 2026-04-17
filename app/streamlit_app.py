@@ -197,6 +197,15 @@ if primary_file is not None and secondary_file is not None:
         try:
             result_df = process_files(primary_file, secondary_file)
 
+            display_df = result_df.copy()
+            display_df = display_df.astype(object).where(display_df.notna(), "")
+            display_df = display_df.astype(str)
+
+            st.markdown("### Preview of transformed output")
+            st.dataframe(display_df, width="stretch", height=460)
+
+            csv_data = result_df.to_csv(index=False).encode("utf-8-sig")
+
             st.markdown(
                 f"""
                 <div class="status-box">
@@ -207,10 +216,6 @@ if primary_file is not None and secondary_file is not None:
                 """,
                 unsafe_allow_html=True,
             )
-
-            st.markdown('<div class="preview-box">', unsafe_allow_html=True)
-            st.markdown("### Preview of transformed output")
-            st.dataframe(result_df, use_container_width=True, height=460)
             st.markdown('</div>', unsafe_allow_html=True)
 
             csv_data = result_df.to_csv(index=False).encode("utf-8-sig")
