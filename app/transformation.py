@@ -9,78 +9,85 @@ def read_input_file(file):
     if suffix == ".csv":
         return pd.read_csv(file)
     elif suffix in [".xlsx", ".xls"]:
+        # your Excel file has headers starting on row 3
         return pd.read_excel(file, header=2)
     else:
         raise ValueError(f"Unsupported file format: {suffix}")
 
 
-def combine_value_columns(df, value_priority, output_column="Value_Combined"):
-    df[output_column] = pd.NA
-
-    for col in value_priority:
-        if col in df.columns:
-            if df[output_column].isna().all():
-                df[output_column] = df[col]
-            else:
-                df[output_column] = df[output_column].fillna(df[col])
-
+def clean_columns(df):
+    df.columns = [str(col).strip() for col in df.columns]
     return df
 
 
-def process_files_generic(left_file, right_file, config, output_file=None):
-    left_df = read_input_file(left_file)
-    right_df = read_input_file(right_file)
+def normalize_datetime_column(df, col_name):
+    if col_name in df.columns:
+        df[col_name] = pd.to_datetime(df[col_name], errors="coerce")
+    return df
 
-    if config.get("rename_left"):
-        left_df = left_df.rename(columns=config["rename_left"])
 
-    if config.get("rename_right"):
-        right_df = right_df.rename(columns=config["rename_right"])
+def build_merged_table(schedule_file, answers_file):
+    schedule = clean_columns(read_input_file(schedule_file))
+    answers = clean_columns(read_input_file(answers_file))
 
-    merge_on = config["merge_on"]
+    if "Input date" in schedule.columns:
+        schedule = schedule.rename(columns={"Input date": "Entry Date"})
 
-    for col in merge_on:
-        if col in left_df.columns:
-            left_df[col] = pd.to_datetime(left_df[col], errors="ignore")
-        if col in right_df.columns:
-            right_df[col] = pd.to_datetime(right_df[col], errors="ignore")
+    schedule = normalize_datetime_column(schedule, "Entry Date")
+    answers = normalize_datetime_column(answers, "Entry Date")
 
-    merged = pd.merge(left_df, right_df, on=merge_on, how="left")
+    merge_keys = ["Patient ID", "Pathway Name", "Content Name", "Entry Date"]
 
-    selected_cols = config.get("selected_columns_after_merge")
-    if selected_cols:
-        merged = merged[selected_cols].copy()
+    merged = pd.merge(schedule, answers, on=merge_keys, how="left")
 
-    rename_after_merge = config.get("rename_after_merge")
-    if rename_after_merge:
-        merged = merged.rename(columns=rename_after_merge)
+    keep_cols = [
+        col
+        for col in [
+            "Patient ID",
+            "Pathway Name",
+            "Content Name",
+            "Scheduled date",
+            "Entry Date",
+            "Question",
+            "Answer Text",
+            "Answer Value",
+        ]
+        if col in merged.columns
+    ]
 
-    merged = combine_value_columns(
-        merged,
-        value_priority=config["value_priority"],
-        output_column="Value_Combined"
-    )
+    merged = merged[keep_cols].copy()
+    return merged
 
-    id_columns = config["id_columns"]
-    field_column = config["field_column"]
 
-    base = merged[id_columns].drop_duplicates()
+def process_files(schedule_file, answers_file, output_file=None):
+    df = build_merged_table(schedule_file, answers_file)
 
-    wide = merged.pivot_table(
+    df["Answer_Combined"] = pd.NA
+    if "Answer Value" in df.columns:
+        df["Answer_Combined"] = df["Answer Value"]
+    if "Answer Text" in df.columns:
+        df["Answer_Combined"] = df["Answer_Combined"].fillna(df["Answer Text"])
+
+    id_columns = [
+        col
+        for col in ["Patient ID", "Pathway Name", "Content Name", "Scheduled date", "Entry Date"]
+        if col in df.columns
+    ]
+
+    final = df.pivot_table(
         index=id_columns,
-        columns=field_column,
-        values="Value_Combined",
+        columns="Question",
+        values="Answer_Combined",
         aggfunc="first"
     ).reset_index()
 
-    wide.columns.name = None
+    final.columns.name = None
 
-    final = base.merge(wide, on=id_columns, how="left")
+    sort_cols = [col for col in ["Patient ID", "Scheduled date", "Entry Date"] if col in final.columns]
+    if sort_cols:
+        final = final.sort_values(sort_cols).reset_index(drop=True)
 
-    sort_columns = [col for col in config.get("sort_columns", []) if col in final.columns]
-    if sort_columns:
-        final = final.sort_values(sort_columns).reset_index(drop=True)
-        final = final.where(pd.notna(final), "")
+    final = final.where(pd.notna(final), "")
 
     if output_file:
         final.to_csv(output_file, index=False, encoding="utf-8-sig")
