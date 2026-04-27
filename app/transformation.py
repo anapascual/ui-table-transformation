@@ -1,4 +1,5 @@
 import pandas as pd
+import re
 from pathlib import Path
 
 
@@ -31,6 +32,17 @@ def require_columns(df, required_cols, df_name):
         raise ValueError(f"{df_name} is missing required columns: {missing}")
 
 
+def sort_question_columns(cols):
+    def sort_key(col):
+        match = re.match(r"(.*)_(\d+)$", col)
+        if match:
+            question, num = match.groups()
+            return (question, int(num))
+        return (col, 0)
+
+    return sorted(cols, key=sort_key)
+
+
 def build_merged_table(primary_file, secondary_file):
     left = clean_columns(read_input_file(primary_file))
     right = clean_columns(read_input_file(secondary_file))
@@ -48,20 +60,13 @@ def build_merged_table(primary_file, secondary_file):
     require_columns(right, required_right, "Secondary input file")
 
     merge_keys = ["Patient ID", "Pathway Name", "Content Name", "Entry Date"]
-
     merged = pd.merge(left, right, on=merge_keys, how="left")
 
     keep_cols = [
-        col
-        for col in [
-            "Patient ID",
-            "Pathway Name",
-            "Content Name",
-            "Scheduled date",
-            "Entry Date",
-            "Question",
-            "Answer Text",
-            "Answer Value",
+        col for col in [
+            "Patient ID", "Pathway Name", "Content Name",
+            "Scheduled date", "Entry Date",
+            "Question", "Answer Text", "Answer Value",
         ]
         if col in merged.columns
     ]
@@ -88,93 +93,91 @@ def process_files(primary_file, secondary_file, output_file=None):
             f"'Question' not found after merge. Available columns: {list(df.columns)}"
         )
 
-    # First pivot: one row per questionnaire occurrence
-    row_id = [
-        col for col in
-        ["Patient ID", "Pathway Name", "Content Name", "Scheduled date", "Entry Date"]
-        if col in df.columns
-    ]
+    id_cols = [col for col in ["Patient ID", "Pathway Name", "Content Name"] if col in df.columns]
+    date_cols = [col for col in ["Scheduled date", "Entry Date"] if col in df.columns]
 
-    wide_per_event = df.pivot_table(
-        index=row_id,
-        columns="Question",
-        values="Answer_Combined",
-        aggfunc="first"
-    ).reset_index()
+    # Determine which groups have multiple entries (iterations)
+    entry_counts = (
+        df.drop_duplicates(subset=id_cols + date_cols)
+        .groupby(id_cols)
+        .size()
+        .reset_index(name="_entry_count")
+    )
+    df = df.merge(entry_counts, on=id_cols, how="left")
 
-    wide_per_event.columns.name = None
+    df_single = df[df["_entry_count"] == 1].drop(columns=["_entry_count"])
+    df_multi = df[df["_entry_count"] > 1].drop(columns=["_entry_count"])
 
-    # Sort events in chronological order
-    sort_cols = [col for col in ["Patient ID", "Pathway Name", "Content Name", "Scheduled date", "Entry Date"] if col in wide_per_event.columns]
-    if sort_cols:
+    results = []
+
+    # --- Non-iterated questionnaires: include Scheduled date and Entry Date ---
+    if not df_single.empty:
+        row_id_single = [col for col in id_cols + date_cols if col in df_single.columns]
+        wide_single = df_single.pivot_table(
+            index=row_id_single,
+            columns="Question",
+            values="Answer_Combined",
+            aggfunc="first",
+        ).reset_index()
+        wide_single.columns.name = None
+        results.append(wide_single)
+
+    # --- Iterated questionnaires: no dates in output, suffix columns with _1, _2, ... ---
+    if not df_multi.empty:
+        row_id_multi = [col for col in id_cols + date_cols if col in df_multi.columns]
+
+        wide_per_event = df_multi.pivot_table(
+            index=row_id_multi,
+            columns="Question",
+            values="Answer_Combined",
+            aggfunc="first",
+        ).reset_index()
+        wide_per_event.columns.name = None
+
+        sort_cols = [col for col in id_cols + date_cols if col in wide_per_event.columns]
         wide_per_event = wide_per_event.sort_values(sort_cols).reset_index(drop=True)
 
-    # Create iteration number per repeated questionnaire
-    iteration_group = [
-        col for col in ["Patient ID", "Pathway Name", "Content Name"] if col in wide_per_event.columns
-    ]
-    iteration_sort = [col for col in ["Scheduled date", "Entry Date"] if col in wide_per_event.columns]
-
-    if iteration_group and iteration_sort:
+        iteration_sort = [col for col in date_cols if col in wide_per_event.columns]
         wide_per_event["Iteration"] = (
             wide_per_event
-            .sort_values(iteration_group + iteration_sort)
-            .groupby(iteration_group)
+            .sort_values(id_cols + iteration_sort)
+            .groupby(id_cols)
             .cumcount() + 1
         )
-    else:
-        raise ValueError("Could not compute iterations because required grouping columns are missing.")
 
-    # Columns to suffix with iteration
-    id_cols = [col for col in ["Patient ID", "Pathway Name", "Content Name"] if col in wide_per_event.columns]
-    non_value_cols = set(id_cols + ["Scheduled date", "Entry Date", "Iteration"])
-    value_cols = [col for col in wide_per_event.columns if col not in non_value_cols]
+        non_value_cols = set(id_cols + date_cols + ["Iteration"])
+        value_cols = [col for col in wide_per_event.columns if col not in non_value_cols]
 
-    # Reshape from event rows to one row per patient/pathway/content
-    melted = wide_per_event.melt(
-        id_vars=id_cols + ["Iteration"],
-        value_vars=value_cols,
-        var_name="Question",
-        value_name="Value"
-    )
+        # Melt using only id_cols (no dates) so dates are excluded from the final output
+        melted = wide_per_event.melt(
+            id_vars=id_cols + ["Iteration"],
+            value_vars=value_cols,
+            var_name="Question",
+            value_name="Value",
+        )
+        melted = melted.dropna(subset=["Value"])
+        melted["Question_Iteration"] = (
+            melted["Question"].astype(str).str.strip() + "_" + melted["Iteration"].astype(str)
+        )
 
-    # Remove empty values
-    melted = melted.dropna(subset=["Value"])
+        final_multi = melted.pivot_table(
+            index=id_cols,
+            columns="Question_Iteration",
+            values="Value",
+            aggfunc="first",
+        ).reset_index()
+        final_multi.columns.name = None
+        results.append(final_multi)
 
-    # Build final column names like Gewicht_1, Gewicht_2
-    melted["Question_Iteration"] = (
-        melted["Question"].astype(str).str.strip() + "_" + melted["Iteration"].astype(str)
-    )
+    if not results:
+        raise ValueError("No data to process.")
 
-    final = melted.pivot_table(
-        index=id_cols,
-        columns="Question_Iteration",
-        values="Value",
-        aggfunc="first"
-    ).reset_index()
+    final = pd.concat(results, ignore_index=True, sort=False)
 
-    final.columns.name = None
-
-    # Order columns nicely
-    base_cols = [col for col in ["Patient ID", "Pathway Name", "Content Name"] if col in final.columns]
-    import re
-
-    def sort_question_columns(cols):
-        def sort_key(col):
-            match = re.match(r"(.*)_(\d+)$", col)
-            if match:
-                question, num = match.groups()
-                return (question, int(num))
-            return (col, 0)
-
-        return sorted(cols, key=sort_key)
-
-
-    base_cols = [col for col in ["Patient ID", "Pathway Name", "Content Name"] if col in final.columns]
+    # Order columns: id cols, then date cols (only present for non-iterated), then question cols
+    base_cols = [col for col in id_cols + date_cols if col in final.columns]
     dynamic_cols = [col for col in final.columns if col not in base_cols]
-
     sorted_dynamic_cols = sort_question_columns(dynamic_cols)
-
     final = final[base_cols + sorted_dynamic_cols]
 
     if output_file:
