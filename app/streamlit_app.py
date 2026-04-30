@@ -1,7 +1,7 @@
 import base64
 import streamlit as st
 from pathlib import Path
-from app.transformation import process_files
+from transformation import process_files
 
 
 def img_to_base64(path: Path) -> str:
@@ -10,379 +10,292 @@ def img_to_base64(path: Path) -> str:
 
 
 st.set_page_config(
-    page_title="Medtronic Data Transformer",
+    page_title="Patient Data Transformer",
     page_icon="📊",
     layout="wide",
 )
 
-# ---------- Custom CSS ----------
+# ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown(
     """
     <style>
-        /* ── Page background ── */
-        .stApp {
-            background-color: #f5f7fa;
-        }
+        .stApp { background-color: #F5F5F5; }
 
-        /* ── Hero bar ── */
+        /* ── Hero ── */
         .hero {
-            background: white;
-            border: 0.5px solid #e2e8f0;
+            background: #fff;
+            border: 0.5px solid #E0E0E0;
             border-radius: 12px;
-            padding: 1rem 1.25rem;
+            padding: 14px 20px;
             display: flex;
             align-items: center;
-            gap: 0.85rem;
-            margin-bottom: 1.25rem;
+            gap: 14px;
+            margin-bottom: 24px;
         }
-        .hero-logo-mark {
-            width: 36px;
-            height: 36px;
-            background: #005c9c;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+        .hero-logo {
+            width: 38px; height: 38px;
+            background: #005C9C;
+            border-radius: 9px;
+            display: flex; align-items: center; justify-content: center;
             flex-shrink: 0;
         }
-        .hero-logo-mark img {
-            height: 22px;
+        .hero-logo img {
+            height: 24px;
             object-fit: contain;
             filter: brightness(0) invert(1);
         }
-        .hero-logo-mark-fallback {
-            width: 36px;
-            height: 36px;
-            background: #005c9c;
-            border-radius: 8px;
-            flex-shrink: 0;
-        }
-        .hero-title {
-            font-size: 1rem;
-            font-weight: 600;
-            color: #0f172a;
-            margin: 0;
-        }
-        .hero-sub {
-            font-size: 0.8rem;
-            color: #64748b;
-            margin: 0;
-        }
+        .hero-title { font-size: 15px; font-weight: 700; color: #0F172A; margin: 0; }
+        .hero-sub   { font-size: 12px; color: #64748B; margin: 2px 0 0 0; }
         .hero-badge {
             margin-left: auto;
-            font-size: 0.7rem;
-            font-weight: 500;
-            color: #185FA5;
-            background: #E6F1FB;
-            padding: 3px 10px;
-            border-radius: 99px;
-            white-space: nowrap;
+            font-size: 11px; font-weight: 600;
+            color: #185FA5; background: #E6F1FB;
+            padding: 4px 12px; border-radius: 99px; white-space: nowrap;
         }
 
-        /* ── Section label ── */
-        .section-label {
-            font-size: 0.7rem;
-            font-weight: 600;
-            color: #94a3b8;
-            text-transform: uppercase;
-            letter-spacing: 0.07em;
-            margin-bottom: 0.5rem;
+        /* ── Phase headers ── */
+        .phase-header {
+            display: flex; align-items: flex-start; gap: 12px;
+            margin-bottom: 14px;
         }
+        .phase-num {
+            width: 28px; height: 28px; border-radius: 50%;
+            background: #005C9C; color: #fff;
+            font-size: 13px; font-weight: 700;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0; margin-top: 2px;
+        }
+        .phase-num.done { background: #3B6D11; }
+        .phase-num.pending { background: #CBD5E1; color: #64748B; }
+        .phase-title { font-size: 14px; font-weight: 700; color: #0F172A; margin: 0; }
+        .phase-hint  { font-size: 12px; color: #64748B; margin: 3px 0 0 0; }
 
-        /* ── Progress stepper ── */
-        .stepper {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 8px;
-            margin-bottom: 1.25rem;
-        }
-        .step {
-            background: white;
-            border: 0.5px solid #e2e8f0;
+        /* ── Upload cards ── */
+        .upload-card {
+            background: #fff;
+            border: 0.5px solid #E0E0E0;
             border-radius: 12px;
-            padding: 0.75rem 0.9rem;
-            position: relative;
+            padding: 16px;
+            margin-bottom: 4px;
         }
-        .step.step-active {
-            border-color: #378ADD;
+        .upload-card.done {
+            border: 1.5px solid #3B6D11;
+            background: #F4FAF0;
         }
-        .step-num {
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.65rem;
-            font-weight: 600;
+        .upload-card-file-label {
+            font-size: 10px; font-weight: 700; color: #94A3B8;
+            text-transform: uppercase; letter-spacing: 0.07em;
             margin-bottom: 6px;
         }
-        .step-num-pending { background: #f1f5f9; color: #94a3b8; }
-        .step-num-active  { background: #005c9c; color: white; }
-        .step-num-done    { background: #EAF3DE; color: #3B6D11; }
-        .step-text {
-            font-size: 0.75rem;
-            color: #64748b;
-            line-height: 1.4;
+        .upload-card-title { font-size: 14px; font-weight: 700; color: #0F172A; margin-bottom: 4px; }
+        .upload-card-desc  { font-size: 12px; color: #64748B; line-height: 1.6; margin-bottom: 10px; }
+        .upload-card-example {
+            font-size: 11px; color: #64748B;
+            background: #F1F5F9; border-radius: 6px;
+            padding: 6px 10px; margin-bottom: 12px;
         }
-        .step-arrow {
-            position: absolute;
-            right: -6px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: #cbd5e1;
-            font-size: 0.75rem;
-            z-index: 2;
-            background: #f5f7fa;
-            line-height: 1;
+        .upload-card-example span { color: #0C447C; font-weight: 600; }
+        .upload-status {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 12px; border-radius: 8px;
+            background: #EAF3DE; border: 0.5px solid #C0DD97;
         }
+        .upload-status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #3B6D11; flex-shrink: 0;
+        }
+        .upload-status-text { font-size: 12px; font-weight: 600; color: #27500A; }
 
-        /* ── Upload zones ── */
-        .upload-zone {
-            background: white;
-            border: 1.5px dashed #cbd5e1;
+        /* ── Workflow cards ── */
+        .workflow-card {
+            background: #fff;
+            border: 0.5px solid #E0E0E0;
             border-radius: 12px;
-            padding: 1.25rem 1rem;
-            text-align: center;
-            margin-bottom: 0.5rem;
+            padding: 16px;
+            margin-bottom: 4px;
         }
-        .upload-zone.upload-done {
-            border-style: solid;
-            border-color: #378ADD;
-            background: #f0f7ff;
+        .workflow-card.selected {
+            border: 2px solid #005C9C;
+            background: #F0F7FF;
         }
-        .upload-zone-icon  { font-size: 1.25rem; margin-bottom: 6px; }
-        .upload-zone-title { font-size: 0.8rem; font-weight: 600; color: #0f172a; margin-bottom: 2px; }
-        .upload-zone-hint  { font-size: 0.72rem; color: #94a3b8; }
-        .upload-zone-filename { font-size: 0.72rem; font-weight: 500; color: #185FA5; margin-top: 4px; }
-
-        /* ── Info cards ── */
-        .info-card {
-            background: #f1f5f9;
-            border-radius: 10px;
-            padding: 0.85rem 1rem;
+        .workflow-card-title    { font-size: 14px; font-weight: 700; color: #0F172A; margin-bottom: 4px; }
+        .workflow-card-subtitle { font-size: 12px; color: #64748B; line-height: 1.6; margin-bottom: 12px; }
+        .workflow-example-label {
+            font-size: 10px; font-weight: 700; color: #94A3B8;
+            text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 6px;
         }
-        .info-card h4 {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: #0f172a;
-            margin: 0 0 5px 0;
+        .mini-table {
+            width: 100%; border-collapse: collapse;
+            font-size: 11px; font-family: Arial, sans-serif;
         }
-        .info-card p {
-            font-size: 0.75rem;
-            color: #64748b;
-            line-height: 1.6;
-            margin: 0;
+        .mini-table th {
+            background: #EEF4FB; color: #185FA5; font-weight: 700;
+            padding: 4px 7px; text-align: left; border: 0.5px solid #D0E4F5;
         }
+        .mini-table td {
+            padding: 4px 7px; border: 0.5px solid #E8EEF5; color: #3C3C3C;
+        }
+        .mini-table tr:nth-child(even) td { background: #F8FAFD; }
+        .mini-table.green th { background: #EAF3DE; color: #3B6D11; border-color: #C0DD97; }
+        .mini-table.green td { border-color: #E8F3DE; }
+        .mini-table.green tr:nth-child(even) td { background: #F4FAF0; }
 
         /* ── Run button ── */
         div.stButton > button {
-            background-color: #005c9c;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            padding: 0.65rem 1.2rem;
-            font-weight: 600;
-            font-size: 0.9rem;
-            width: 100%;
+            background-color: #005C9C !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 10px !important;
+            padding: 0.8rem 1.2rem !important;
+            font-weight: 700 !important;
+            font-size: 0.95rem !important;
+            width: 100% !important;
         }
-        div.stButton > button:hover { background-color: #004b80; color: white; }
+        div.stButton > button:hover { background-color: #004880 !important; }
         div.stButton > button:disabled {
-            background-color: #e2e8f0 !important;
-            color: #94a3b8 !important;
-            cursor: not-allowed;
+            background-color: #E2E8F0 !important;
+            color: #94A3B8 !important;
         }
 
         /* ── Download button ── */
         div.stDownloadButton > button {
-            background-color: #0f766e;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            padding: 0.65rem 1.2rem;
-            font-weight: 600;
-            font-size: 0.9rem;
-            width: 100%;
+            background-color: #3B6D11 !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 10px !important;
+            padding: 0.75rem 1.2rem !important;
+            font-weight: 700 !important;
+            font-size: 0.9rem !important;
+            width: 100% !important;
         }
-        div.stDownloadButton > button:hover { background-color: #0d5f58; color: white; }
+        div.stDownloadButton > button:hover { background-color: #27500A !important; }
 
-        /* ── Status box ── */
+        /* ── Result status ── */
         .status-box {
-            background: #f0f9ff;
-            border: 0.5px solid #bae6fd;
-            border-radius: 10px;
-            padding: 0.85rem 1rem;
-            font-size: 0.82rem;
-            color: #0c4a6e;
-            margin-bottom: 1rem;
+            background: #EAF3DE; border: 0.5px solid #C0DD97;
+            border-radius: 10px; padding: 14px 16px;
+            font-size: 13px; color: #27500A; margin-bottom: 16px;
         }
 
-        /* ── Notice bar ── */
+        /* ── Reassurance bar ── */
+        .reassurance {
+            background: #fff; border: 0.5px solid #E0E0E0;
+            border-radius: 10px; padding: 12px 16px;
+            display: flex; align-items: flex-start; gap: 10px;
+            margin-top: 12px;
+        }
+        .reassurance p { font-size: 12px; color: #64748B; line-height: 1.6; margin: 0; }
+        .reassurance strong { color: #0F172A; }
+
+        /* ── Notice (missing files) ── */
         .notice {
-            background: #f8fafc;
-            border: 0.5px solid #e2e8f0;
-            border-radius: 10px;
-            padding: 0.65rem 1rem;
-            font-size: 0.75rem;
-            color: #94a3b8;
-            text-align: center;
-            margin-top: 0.5rem;
+            background: #FFF8E6; border: 0.5px solid #FAC775;
+            border-radius: 10px; padding: 10px 16px;
+            font-size: 12px; color: #633806;
+            text-align: center; margin-top: 8px;
         }
 
-        .spacer { margin-bottom: 1rem; }
+        .spacer { margin-bottom: 1.25rem; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ---------- Derive file states (must come before any widget renders) ----------
+# ── Session state ──────────────────────────────────────────────────────────────
 primary_done   = st.session_state.get("primary_file")   is not None
 secondary_done = st.session_state.get("secondary_file") is not None
 both_done      = primary_done and secondary_done
 
-
-def _step_num(index: int) -> str:
-    """Return the HTML for the step-number bubble at position `index` (1-based)."""
-    if index == 1:
-        cls, text = ("step-num-done", "✓") if primary_done else ("step-num-active", "1")
-    elif index == 2:
-        if secondary_done:
-            cls, text = "step-num-done", "✓"
-        elif primary_done:
-            cls, text = "step-num-active", "2"
-        else:
-            cls, text = "step-num-pending", "2"
-    elif index == 3:
-        cls, text = ("step-num-active", "3") if both_done else ("step-num-pending", "3")
-    else:
-        cls, text = "step-num-pending", "4"
-    return f'<div class="step-num {cls}">{text}</div>'
-
-
-def _step_cls(index: int) -> str:
-    if index == 1:
-        return "step"
-    if index == 2:
-        return "step step-active" if (primary_done and not secondary_done) else "step"
-    if index == 3:
-        return "step step-active" if both_done else "step"
-    return "step"
-
-
-# ---------- Hero ----------
+# ── Hero ───────────────────────────────────────────────────────────────────────
 logo_path = Path("assets/medtronic_logo.png")
 if logo_path.exists():
     logo_b64   = img_to_base64(logo_path)
     logo_inner = f'<img src="data:image/png;base64,{logo_b64}" alt="Medtronic">'
-    logo_block = f'<div class="hero-logo-mark">{logo_inner}</div>'
 else:
-    logo_block = '<div class="hero-logo-mark-fallback"></div>'
+    logo_inner = ""
 
 st.markdown(
     f"""
     <div class="hero">
-        {logo_block}
+        <div class="hero-logo">{logo_inner}</div>
         <div>
-            <p class="hero-title">Medtronic data transformer</p>
-            <p class="hero-sub">Upload two files · transform · export CSV</p>
+            <p class="hero-title">Patient data transformer</p>
+            <p class="hero-sub">Prepare questionnaire data for analysis — no technical knowledge needed</p>
         </div>
-        <div class="hero-badge">CSV &nbsp;·&nbsp; XLSX</div>
+        <div class="hero-badge">Medtronic</div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ---------- Progress stepper ----------
-st.markdown('<div class="section-label">Workflow</div>', unsafe_allow_html=True)
+# ── STEP 1 — Upload files ──────────────────────────────────────────────────────
+step1_num_cls = "done" if both_done else ""
 st.markdown(
     f"""
-    <div class="stepper">
-        <div class="{_step_cls(1)}">
-            {_step_num(1)}
-            <div class="step-text">Upload questions file</div>
-            <div class="step-arrow">›</div>
-        </div>
-        <div class="{_step_cls(2)}">
-            {_step_num(2)}
-            <div class="step-text">Upload answers file</div>
-            <div class="step-arrow">›</div>
-        </div>
-        <div class="{_step_cls(3)}">
-            {_step_num(3)}
-            <div class="step-text">Run transformation</div>
-            <div class="step-arrow">›</div>
-        </div>
-        <div class="{_step_cls(4)}">
-            {_step_num(4)}
-            <div class="step-text">Download CSV</div>
+    <div class="phase-header">
+        <div class="phase-num {step1_num_cls}">{"✓" if both_done else "1"}</div>
+        <div>
+            <p class="phase-title">Step 1 — Upload your files</p>
+            <p class="phase-hint">Both files are needed before you can continue</p>
         </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
-
-# ---------- Upload section ----------
-st.markdown('<div class="section-label">Upload files</div>', unsafe_allow_html=True)
 
 col1, col2 = st.columns(2)
 
 with col1:
+    card_cls = "upload-card done" if primary_done else "upload-card"
     if primary_done:
         fname = st.session_state["primary_file"].name
-        st.markdown(
-            f"""
-            <div class="upload-zone upload-done">
-                <div class="upload-zone-icon">📄</div>
-                <div class="upload-zone-title">Content &amp; questions</div>
-                <div class="upload-zone-filename">{fname}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        status_block = (
+            '<div class="upload-status">'
+            '<div class="upload-status-dot"></div>'
+            '<div class="upload-status-text">' + fname + ' — uploaded</div>'
+            '</div>'
         )
     else:
-        st.markdown(
-            """
-            <div class="upload-zone">
-                <div class="upload-zone-icon">⬆</div>
-                <div class="upload-zone-title">Content &amp; questions</div>
-                <div class="upload-zone-hint">CSV or XLSX · max 200 MB</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    primary_file = st.file_uploader(
-        "Questions file",
+        status_block = ""
+    st.markdown(
+        '<div class="' + card_cls + '">'
+        '<div class="upload-card-file-label">File 1 of 2</div>'
+        '<div class="upload-card-title">Questions &amp; schedule</div>'
+        '<div class="upload-card-desc">The file that lists which questionnaires each patient was assigned and when.</div>'
+        '<div class="upload-card-example">Usually named: <span>content_export.csv</span> or <span>pathway_schedule.xlsx</span></div>'
+        + status_block + '</div>',
+        unsafe_allow_html=True,
+    )
+    st.file_uploader(
+        "Questions & schedule file",
         type=["csv", "xlsx"],
         key="primary_file",
         label_visibility="collapsed",
     )
 
 with col2:
+    card_cls = "upload-card done" if secondary_done else "upload-card"
     if secondary_done:
         fname = st.session_state["secondary_file"].name
-        st.markdown(
-            f"""
-            <div class="upload-zone upload-done">
-                <div class="upload-zone-icon">📄</div>
-                <div class="upload-zone-title">Answers</div>
-                <div class="upload-zone-filename">{fname}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        status_block = (
+            '<div class="upload-status">'
+            '<div class="upload-status-dot"></div>'
+            '<div class="upload-status-text">' + fname + ' — uploaded</div>'
+            '</div>'
         )
     else:
-        st.markdown(
-            """
-            <div class="upload-zone">
-                <div class="upload-zone-icon">⬆</div>
-                <div class="upload-zone-title">Answers</div>
-                <div class="upload-zone-hint">CSV or XLSX · max 200 MB</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    secondary_file = st.file_uploader(
-        "Answers file",
+        status_block = ""
+    st.markdown(
+        '<div class="' + card_cls + '">'
+        '<div class="upload-card-file-label">File 2 of 2</div>'
+        '<div class="upload-card-title">Patient answers</div>'
+        '<div class="upload-card-desc">The file that contains how each patient responded to each question.</div>'
+        '<div class="upload-card-example">Usually named: <span>answers_export.csv</span> or <span>responses.xlsx</span></div>'
+        + status_block + '</div>',
+        unsafe_allow_html=True,
+    )
+    st.file_uploader(
+        "Patient answers file",
         type=["csv", "xlsx"],
         key="secondary_file",
         label_visibility="collapsed",
@@ -390,87 +303,163 @@ with col2:
 
 st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
 
-# ---------- Info cards ----------
-info_col1, info_col2 = st.columns(2)
+# ── STEP 2 — Questionnaire type ────────────────────────────────────────────────
+step2_num_cls = "" if both_done else "pending"
+st.markdown(
+    f"""
+    <div class="phase-header">
+        <div class="phase-num {step2_num_cls}">2</div>
+        <div>
+            <p class="phase-title">Step 2 — What kind of questionnaire is this?</p>
+            <p class="phase-hint">Choose the option that matches how your patients filled it in</p>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-with info_col1:
+wf_col1, wf_col2 = st.columns(2)
+
+with wf_col1:
     st.markdown(
         """
-        <div class="info-card">
-            <h4>How it works</h4>
-            <p>
-                Upload the questions file first, then the answers file.
-                The transformer joins and reshapes them into a single flat output table
-                ready for analysis or reporting.
-            </p>
+        <div class="workflow-card" id="wf-normal">
+            <div class="workflow-card-title">Filled in once</div>
+            <div class="workflow-card-subtitle">
+                Each patient completed this questionnaire a single time —
+                for example, an intake form or a one-off assessment.
+            </div>
+            <div class="workflow-example-label">Your output will look like this</div>
+            <table class="mini-table">
+                <tr><th>Patient</th><th>Date</th><th>Weight</th><th>BMI</th></tr>
+                <tr><td>P001</td><td>Jan 10</td><td>70</td><td>22.1</td></tr>
+                <tr><td>P002</td><td>Jan 15</td><td>65</td><td>21.0</td></tr>
+            </table>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-with info_col2:
+with wf_col2:
     st.markdown(
         """
-        <div class="info-card">
-            <h4>Supported formats</h4>
-            <p>
-                CSV and Excel (.xlsx) files are accepted — up to 200 MB each.
-                Column headers must be present in row 1.
-            </p>
+        <div class="workflow-card">
+            <div class="workflow-card-title">Filled in repeatedly</div>
+            <div class="workflow-card-subtitle">
+                Each patient completed this questionnaire multiple times —
+                for example, a weekly check-in or a follow-up at every visit.
+            </div>
+            <div class="workflow-example-label">Your output will look like this</div>
+            <table class="mini-table green">
+                <tr><th>Patient</th><th>Weight 1</th><th>Weight 2</th><th>BMI 1</th><th>BMI 2</th></tr>
+                <tr><td>P001</td><td>70</td><td>72</td><td>22.1</td><td>22.8</td></tr>
+                <tr><td>P002</td><td>65</td><td>—</td><td>21.0</td><td>—</td></tr>
+            </table>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+workflow = st.radio(
+    "Questionnaire type",
+    options=["normal", "iterative"],
+    format_func=lambda x: {
+        "normal":    "Filled in once — one row per questionnaire event, dates included",
+        "iterative": "Filled in repeatedly — one row per patient, answers shown as Visit 1, Visit 2 …",
+    }[x],
+    label_visibility="collapsed",
+)
 
 st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
 
-# ---------- Run button + results ----------
+# ── STEP 3 — Generate ──────────────────────────────────────────────────────────
+step3_num_cls = "" if both_done else "pending"
+st.markdown(
+    f"""
+    <div class="phase-header">
+        <div class="phase-num {step3_num_cls}">3</div>
+        <div>
+            <p class="phase-title">Step 3 — Generate your file</p>
+            <p class="phase-hint">This usually takes a few seconds. A ready-to-open Excel file will be downloaded.</p>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 if both_done:
-    if st.button("▶  Run transformation"):
+    if st.button("▶  Generate transformed file"):
         try:
-            with st.spinner("Transforming…"):
-                result_df = process_files(primary_file, secondary_file)
+            with st.spinner("Processing your data…"):
+                result_df = process_files(
+                    st.session_state["primary_file"],
+                    st.session_state["secondary_file"],
+                    workflow=workflow,
+                )
 
             display_df = result_df.copy()
             display_df = display_df.astype(object).where(result_df.notna(), "")
             display_df = display_df.astype(str)
 
+            n_patients = result_df["Patient ID"].nunique() if "Patient ID" in result_df.columns else len(result_df)
+            n_cols     = len(result_df.columns)
+
             st.markdown(
                 f"""
                 <div class="status-box">
-                    <b>Transformation complete.</b><br>
-                    {len(result_df)} rows &nbsp;·&nbsp; {len(result_df.columns)} columns
+                    <strong>Your file is ready.</strong><br>
+                    {n_patients} patients &nbsp;·&nbsp; {n_cols} columns of data
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            st.markdown('<div class="section-label">Preview</div>', unsafe_allow_html=True)
-            st.dataframe(display_df, width='stretch', height=420)
+            st.markdown('<div class="section-label" style="font-size:10px;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;">Preview — first rows of your output</div>', unsafe_allow_html=True)
+            st.dataframe(display_df, width='stretch', height=380)
 
             csv_data = result_df.to_csv(index=False).encode("utf-8-sig")
 
-            st.markdown(
-                '<div class="section-label" style="margin-top:1rem;">Export</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
             st.download_button(
-                label="⬇  Download transformed CSV",
+                label="⬇  Download your Excel-ready file (.csv)",
                 data=csv_data,
-                file_name="transformed_output.csv",
+                file_name="patient_data_transformed.csv",
                 mime="text/csv",
             )
 
         except Exception as e:
-            st.error(f"An error occurred during processing: {e}")
+            st.error(
+                f"Something went wrong while processing your files. "
+                f"Please check that you uploaded the correct files and try again.\n\n"
+                f"Technical detail: {e}"
+            )
 else:
-    st.button("▶  Run transformation", disabled=True)
+    st.button("▶  Generate transformed file", disabled=True)
     missing = []
     if not primary_done:
-        missing.append("questions file")
+        missing.append("the questions & schedule file")
     if not secondary_done:
-        missing.append("answers file")
+        missing.append("the patient answers file")
     st.markdown(
-        f'<div class="notice">Upload the {" and ".join(missing)} to continue</div>',
+        f'<div class="notice">Please upload {" and ".join(missing)} above to continue</div>',
         unsafe_allow_html=True,
     )
+
+# ── Reassurance footer ─────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <div class="reassurance">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style="flex-shrink:0;margin-top:1px;">
+            <circle cx="9" cy="9" r="7.5" stroke="#94A3B8" stroke-width="1.2"/>
+            <line x1="9" y1="8" x2="9" y2="13" stroke="#94A3B8" stroke-width="1.4" stroke-linecap="round"/>
+            <circle cx="9" cy="5.5" r="0.9" fill="#94A3B8"/>
+        </svg>
+        <p>
+            <strong>Your data is not stored.</strong>
+            Files are processed in memory only and discarded as soon as the transformation
+            is complete. Nothing is saved to any server.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
