@@ -4,63 +4,82 @@ from transformation_common import build_merged_table
 
 
 def sort_question_columns(cols):
-    """
-    Sorts question columns so that repeated answers group together by iteration:
-        Weight_1, Weight_2, BMI_1, BMI_2  →  BMI_1, BMI_2, Weight_1, Weight_2
-    """
     def sort_key(col):
         match = re.match(r"(.*)_(\d+)$", col)
         if match:
             question, num = match.groups()
             return (question, int(num))
         return (col, 0)
-
     return sorted(cols, key=sort_key)
+
+
+def _fill_sentinel(series, sentinel_ts, sentinel_str):
+    """Fill NaN/NaT regardless of whether the column is datetime or object/str."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series.fillna(sentinel_ts)
+    else:
+        return series.fillna(sentinel_str)
+
+
+def _restore_sentinel(series, sentinel_ts, sentinel_str):
+    """Put NaN/NaT back after pivot."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series.replace(sentinel_ts, pd.NaT)
+    else:
+        return series.replace(sentinel_str, pd.NA)
 
 
 def process_iterative_files(primary_file, secondary_file, output_file=None):
     """
     Iterative questionnaire workflow.
 
-    The same patient/pathway/content appears MULTIPLE TIMES (one per
-    visit or iteration).  Output: one row per patient, with repeated
-    question answers suffixed _1, _2, _3 … in chronological order.
-    Dates are dropped from the output because they are absorbed into
-    the iteration number.
+    Output: one row per patient, with repeated question answers suffixed
+    _1, _2, _3 … in chronological order by Entry Date.
 
-    Example output shape:
-        Patient ID | Pathway Name | Content Name | Weight_1 | Weight_2 | BMI_1 | BMI_2
-        P001       | Pathway A    | Content X    | 70       | 72       | 22.1  | 22.8
+    Rows where Scheduled date (or any other date) is missing are fully
+    preserved — NaT/NaN is replaced with a sentinel before pivoting so
+    pandas does not silently discard those rows.
     """
     df = build_merged_table(primary_file, secondary_file)
 
-    id_cols = [col for col in ["Patient ID", "Pathway Name", "Content Name"] if col in df.columns]
+    id_cols   = [col for col in ["Patient ID", "Pathway Name", "Content Name"] if col in df.columns]
     date_cols = [col for col in ["Scheduled date", "Entry Date"] if col in df.columns]
 
-    # Step 1 – pivot to one row per (patient + event), one column per question
-    wide_per_event = df.pivot_table(
+    SENTINEL_TS  = pd.Timestamp("1900-01-01")
+    SENTINEL_STR = "___MISSING___"
+
+    # ── Step 1: pivot to one row per event, keeping NaN rows via sentinel ──
+    df_pivot = df.copy()
+    for col in date_cols:
+        df_pivot[col] = _fill_sentinel(df_pivot[col], SENTINEL_TS, SENTINEL_STR)
+
+    wide_per_event = df_pivot.pivot_table(
         index=id_cols + date_cols,
         columns="Question",
         values="Answer_Combined",
         aggfunc="first",
     ).reset_index()
-
     wide_per_event.columns.name = None
 
-    # Step 2 – sort chronologically so iteration numbers follow time order
-    sort_cols = [col for col in id_cols + date_cols if col in wide_per_event.columns]
-    wide_per_event = wide_per_event.sort_values(sort_cols).reset_index(drop=True)
+    # Restore sentinels to NaN/NaT
+    for col in date_cols:
+        wide_per_event[col] = _restore_sentinel(wide_per_event[col], SENTINEL_TS, SENTINEL_STR)
 
-    # Step 3 – assign an iteration number per patient group
-    iteration_sort = [col for col in date_cols if col in wide_per_event.columns]
+    # ── Step 2: sort by Entry Date (NaT last) so iteration order follows time ──
+    sort_key_col = "Entry Date" if "Entry Date" in wide_per_event.columns else (date_cols[0] if date_cols else None)
+    if sort_key_col:
+        wide_per_event = (
+            wide_per_event
+            .sort_values(id_cols + [sort_key_col], na_position="last")
+            .reset_index(drop=True)
+        )
+
+    # ── Step 3: assign iteration number per patient group ──
     wide_per_event["Iteration"] = (
-        wide_per_event
-        .sort_values(id_cols + iteration_sort)
-        .groupby(id_cols)
-        .cumcount() + 1
+        wide_per_event.groupby(id_cols).cumcount() + 1
     )
 
-    # Step 4 – melt back to long (id + iteration | question | value)
+    # ── Step 4: melt back to long format ──
     non_value_cols = set(id_cols + date_cols + ["Iteration"])
     value_cols = [col for col in wide_per_event.columns if col not in non_value_cols]
 
@@ -72,7 +91,7 @@ def process_iterative_files(primary_file, secondary_file, output_file=None):
     )
     melted = melted.dropna(subset=["Value"])
 
-    # Step 5 – build "Question_N" column names and pivot to final wide shape
+    # ── Step 5: build Question_N column names and pivot to final wide shape ──
     melted["Question_Iteration"] = (
         melted["Question"].astype(str).str.strip()
         + "_"
@@ -85,11 +104,10 @@ def process_iterative_files(primary_file, secondary_file, output_file=None):
         values="Value",
         aggfunc="first",
     ).reset_index()
-
     final.columns.name = None
 
-    # Step 6 – order: id columns first, then question columns sorted by name + iteration
-    base_cols = [col for col in id_cols if col in final.columns]
+    # ── Step 6: order columns ──
+    base_cols    = [col for col in id_cols if col in final.columns]
     dynamic_cols = [col for col in final.columns if col not in base_cols]
     final = final[base_cols + sort_question_columns(dynamic_cols)]
 
