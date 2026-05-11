@@ -31,6 +31,39 @@ def require_columns(df, required_cols, df_name):
         raise ValueError(f"{df_name} is missing required columns: {missing}")
 
 
+def read_demographics_file(file):
+    demo = clean_columns(read_input_file(file))
+    require_columns(demo, ["Patient ID"], "Demographics file")
+    demo = demo.drop_duplicates(subset=["Patient ID"])
+
+    # Find Age column (case-insensitive, including variations like "Patient Age")
+    age_col = next(
+        (col for col in demo.columns if "age" in col.lower()),
+        None
+    )
+    
+    # Find Sex/Gender column (case-insensitive, including variations like "Patient Gender")
+    sex_col = next(
+        (col for col in demo.columns if any(term in col.lower() for term in ["sex", "gender"])),
+        None
+    )
+
+    result_dict = {"Patient ID": demo["Patient ID"]}
+    if age_col:
+        result_dict["Age"] = demo[age_col]
+    if sex_col:
+        result_dict["Sex"] = demo[sex_col]
+
+    return pd.DataFrame(result_dict)
+
+
+def merge_demographics(df, demographics_file):
+    if demographics_file is None:
+        return df
+    demo = read_demographics_file(demographics_file)
+    return df.merge(demo, on="Patient ID", how="left")
+
+
 def build_merged_table(primary_file, secondary_file):
     """
     Reads, cleans, validates and merges the two input files.

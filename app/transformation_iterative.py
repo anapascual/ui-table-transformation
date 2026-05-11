@@ -1,6 +1,6 @@
 import re
 import pandas as pd
-from transformation_common import build_merged_table
+from transformation_common import build_merged_table, merge_demographics
 
 
 def sort_question_columns(cols):
@@ -29,7 +29,7 @@ def _restore_sentinel(series, sentinel_ts, sentinel_str):
         return series.replace(sentinel_str, pd.NA)
 
 
-def process_iterative_files(primary_file, secondary_file, output_file=None):
+def process_iterative_files(primary_file, secondary_file, demographics_file=None, output_file=None):
     """
     Iterative questionnaire workflow.
 
@@ -110,6 +110,14 @@ def process_iterative_files(primary_file, secondary_file, output_file=None):
     base_cols    = [col for col in id_cols if col in final.columns]
     dynamic_cols = [col for col in final.columns if col not in base_cols]
     final = final[base_cols + sort_question_columns(dynamic_cols)]
+
+    final = merge_demographics(final, demographics_file)
+    if any(col in final.columns for col in ["Age", "Sex", "Gender"]):
+        demo_cols = [col for col in ["Age", "Sex", "Gender"] if col in final.columns]
+        base_cols = [col for col in ["Patient ID"] if col in final.columns]
+        remaining_id_cols = [col for col in ["Pathway Name", "Content Name"] if col in final.columns]
+        other_cols = [col for col in final.columns if col not in base_cols + demo_cols + remaining_id_cols]
+        final = final[base_cols + demo_cols + remaining_id_cols + other_cols]
 
     if output_file:
         final.to_csv(output_file, index=False, encoding="utf-8-sig")

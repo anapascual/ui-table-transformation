@@ -202,9 +202,10 @@ st.markdown(
 )
 
 # ── Session state ──────────────────────────────────────────────────────────────
-primary_done   = st.session_state.get("primary_file")   is not None
-secondary_done = st.session_state.get("secondary_file") is not None
-both_done      = primary_done and secondary_done
+primary_done      = st.session_state.get("primary_file") is not None
+secondary_done    = st.session_state.get("secondary_file") is not None
+demographics_done = st.session_state.get("demographics_file") is not None
+required_done     = primary_done and secondary_done
 
 # ── Hero ───────────────────────────────────────────────────────────────────────
 logo_path = Path("assets/medtronic_logo.png")
@@ -229,21 +230,21 @@ st.markdown(
 )
 
 # ── STEP 1 — Upload files ──────────────────────────────────────────────────────
-step1_num_cls = "done" if both_done else ""
+step1_num_cls = "done" if required_done else ""
 st.markdown(
     f"""
     <div class="phase-header">
-        <div class="phase-num {step1_num_cls}">{"✓" if both_done else "1"}</div>
+        <div class="phase-num {step1_num_cls}">{"✓" if required_done else "1"}</div>
         <div>
             <p class="phase-title">Step 1 — Upload your files</p>
-            <p class="phase-hint">Both files are needed before you can continue</p>
+            <p class="phase-hint">Upload the first two required files; the demographics file is optional.</p>
         </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     card_cls = "upload-card done" if primary_done else "upload-card"
@@ -259,7 +260,7 @@ with col1:
         status_block = ""
     st.markdown(
         '<div class="' + card_cls + '">'
-        '<div class="upload-card-file-label">File 1 of 2</div>'
+        '<div class="upload-card-file-label">File 1 of 3</div>'
         '<div class="upload-card-title">Questions &amp; schedule</div>'
         '<div class="upload-card-desc">The file that lists which questionnaires each patient was assigned and when.</div>'
         '<div class="upload-card-example">Usually named: <span>content_export.csv</span> or <span>pathway_schedule.xlsx</span></div>'
@@ -287,7 +288,7 @@ with col2:
         status_block = ""
     st.markdown(
         '<div class="' + card_cls + '">'
-        '<div class="upload-card-file-label">File 2 of 2</div>'
+        '<div class="upload-card-file-label">File 2 of 3</div>'
         '<div class="upload-card-title">Patient answers</div>'
         '<div class="upload-card-desc">The file that contains how each patient responded to each question.</div>'
         '<div class="upload-card-example">Usually named: <span>answers_export.csv</span> or <span>responses.xlsx</span></div>'
@@ -301,10 +302,38 @@ with col2:
         label_visibility="collapsed",
     )
 
+with col3:
+    card_cls = "upload-card done" if demographics_done else "upload-card"
+    if demographics_done:
+        fname = st.session_state["demographics_file"].name
+        status_block = (
+            '<div class="upload-status">'
+            '<div class="upload-status-dot"></div>'
+            '<div class="upload-status-text">' + fname + ' — uploaded</div>'
+            '</div>'
+        )
+    else:
+        status_block = ""
+    st.markdown(
+        '<div class="' + card_cls + '">'
+        '<div class="upload-card-file-label">File 3 of 3 (optional)</div>'
+        '<div class="upload-card-title">Patient demographics</div>'
+        '<div class="upload-card-desc">Optional file with patient age and sex for each Patient ID.</div>'
+        '<div class="upload-card-example">Usually named: <span>demographics.csv</span> or <span>patient_info.xlsx</span></div>'
+        + status_block + '</div>',
+        unsafe_allow_html=True,
+    )
+    st.file_uploader(
+        "Patient demographics file",
+        type=["csv", "xlsx"],
+        key="demographics_file",
+        label_visibility="collapsed",
+    )
+
 st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
 
 # ── STEP 2 — Questionnaire type ────────────────────────────────────────────────
-step2_num_cls = "" if both_done else "pending"
+step2_num_cls = "" if required_done else "pending"
 st.markdown(
     f"""
     <div class="phase-header">
@@ -373,7 +402,7 @@ workflow = st.radio(
 st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
 
 # ── STEP 3 — Generate ──────────────────────────────────────────────────────────
-step3_num_cls = "" if both_done else "pending"
+step3_num_cls = "" if required_done else "pending"
 st.markdown(
     f"""
     <div class="phase-header">
@@ -387,7 +416,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if both_done:
+if required_done:
     if st.button("▶  Generate transformed file"):
         try:
             with st.spinner("Processing your data…"):
@@ -395,6 +424,7 @@ if both_done:
                     st.session_state["primary_file"],
                     st.session_state["secondary_file"],
                     workflow=workflow,
+                    demographics_file=st.session_state.get("demographics_file"),
                 )
 
             display_df = result_df.copy()

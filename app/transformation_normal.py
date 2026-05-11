@@ -1,8 +1,8 @@
 import pandas as pd
-from transformation_common import build_merged_table
+from transformation_common import build_merged_table, merge_demographics
 
 
-def process_normal_files(primary_file, secondary_file, output_file=None):
+def process_normal_files(primary_file, secondary_file, demographics_file=None, output_file=None):
     """
     Normal (non-iterative) questionnaire workflow.
 
@@ -46,6 +46,14 @@ def process_normal_files(primary_file, secondary_file, output_file=None):
             final[col] = final[col].replace(SENTINEL_DATE, pd.NaT)
         else:
             final[col] = final[col].replace(SENTINEL_STR, pd.NA)
+
+    final = merge_demographics(final, demographics_file)
+    if any(col in final.columns for col in ["Age", "Sex", "Gender"]):
+        demo_cols = [col for col in ["Age", "Sex", "Gender"] if col in final.columns]
+        base_cols = [col for col in ["Patient ID"] if col in final.columns]
+        remaining_id_cols = [col for col in ["Pathway Name", "Content Name"] if col in final.columns]
+        other_cols = [col for col in final.columns if col not in base_cols + demo_cols + remaining_id_cols]
+        final = final[base_cols + demo_cols + remaining_id_cols + other_cols]
 
     if output_file:
         final.to_csv(output_file, index=False, encoding="utf-8-sig")
