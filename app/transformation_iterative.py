@@ -4,12 +4,17 @@ from transformation_common import build_merged_table, merge_demographics
 
 
 def sort_question_columns(cols):
+    """Sort columns by questionnaire name first, then question text, then iteration."""
     def sort_key(col):
-        match = re.match(r"(.*)_(\d+)$", col)
+        match = re.match(r"^(.*)_(\d+)$", col)
         if match:
-            question, num = match.groups()
-            return (question, int(num))
-        return (col, 0)
+            question_part, num = match.groups()
+            qmatch = re.match(r"^(.*)_(.+)$", question_part)
+            if qmatch:
+                question, qname = qmatch.groups()
+                return (qname.strip(), question.strip(), int(num))
+            return ("", question_part.strip(), int(num))
+        return ("", col, 0)
     return sorted(cols, key=sort_key)
 
 
@@ -36,14 +41,23 @@ def process_iterative_files(primary_file, secondary_file, demographics_file=None
     Output: one row per patient, with repeated question answers suffixed
     _1, _2, _3 … in chronological order by Entry Date.
 
+    When there are multiple questionnaires (Content Name varies):
+    - Column names include the questionnaire name: Question_QuestionnaireName_1
+    When there is only one questionnaire:
+    - Column names use simple iteration: Question_1, Question_2
+
     Rows where Scheduled date (or any other date) is missing are fully
     preserved — NaT/NaN is replaced with a sentinel before pivoting so
     pandas does not silently discard those rows.
     """
     df = build_merged_table(primary_file, secondary_file)
 
-    id_cols   = [col for col in ["Patient ID", "Pathway Name", "Content Name"] if col in df.columns]
+    id_cols   = [col for col in ["Patient ID", "Pathway Name"] if col in df.columns]
     date_cols = [col for col in ["Scheduled date", "Entry Date"] if col in df.columns]
+    
+    # Detect if there are multiple questionnaires
+    has_content_name = "Content Name" in df.columns
+    multiple_questionnaires = has_content_name and (df.groupby(id_cols)["Content Name"].nunique() > 1).any()
 
     SENTINEL_TS  = pd.Timestamp("1900-01-01")
     SENTINEL_STR = "___MISSING___"
@@ -53,8 +67,12 @@ def process_iterative_files(primary_file, secondary_file, demographics_file=None
     for col in date_cols:
         df_pivot[col] = _fill_sentinel(df_pivot[col], SENTINEL_TS, SENTINEL_STR)
 
+    pivot_idx = id_cols + date_cols
+    if multiple_questionnaires:
+        pivot_idx = pivot_idx + ["Content Name"]
+
     wide_per_event = df_pivot.pivot_table(
-        index=id_cols + date_cols,
+        index=pivot_idx,
         columns="Question",
         values="Answer_Combined",
         aggfunc="first",
@@ -68,35 +86,54 @@ def process_iterative_files(primary_file, secondary_file, demographics_file=None
     # ── Step 2: sort by Entry Date (NaT last) so iteration order follows time ──
     sort_key_col = "Entry Date" if "Entry Date" in wide_per_event.columns else (date_cols[0] if date_cols else None)
     if sort_key_col:
+        sort_cols = id_cols + ([sort_key_col] if sort_key_col else [])
         wide_per_event = (
             wide_per_event
-            .sort_values(id_cols + [sort_key_col], na_position="last")
+            .sort_values(sort_cols, na_position="last")
             .reset_index(drop=True)
         )
 
-    # ── Step 3: assign iteration number per patient group ──
+    # ── Step 3: assign iteration number (chronological across all questionnaires) ──
+    # ALWAYS group by id_cols only, so iteration spans all questionnaires for a patient
     wide_per_event["Iteration"] = (
         wide_per_event.groupby(id_cols).cumcount() + 1
     )
 
     # ── Step 4: melt back to long format ──
-    non_value_cols = set(id_cols + date_cols + ["Iteration"])
+    melt_id_vars = id_cols + ["Iteration"]
+    if multiple_questionnaires:
+        melt_id_vars = melt_id_vars + ["Content Name"]
+    
+    non_value_cols = set(melt_id_vars + date_cols)
     value_cols = [col for col in wide_per_event.columns if col not in non_value_cols]
 
     melted = wide_per_event.melt(
-        id_vars=id_cols + ["Iteration"],
+        id_vars=melt_id_vars,
         value_vars=value_cols,
         var_name="Question",
         value_name="Value",
     )
     melted = melted.dropna(subset=["Value"])
 
-    # ── Step 5: build Question_N column names and pivot to final wide shape ──
-    melted["Question_Iteration"] = (
-        melted["Question"].astype(str).str.strip()
-        + "_"
-        + melted["Iteration"].astype(str)
-    )
+    # ── Step 5: build Question column names ──
+    # ALWAYS include questionnaire name if present, for full disambiguation
+    print(f"[DEBUG] Step 5: multiple_questionnaires={multiple_questionnaires}")
+    if multiple_questionnaires:
+        print(f"[DEBUG] Building Question_Iteration WITH Content Name")
+        melted["Question_Iteration"] = (
+            melted["Question"].astype(str).str.strip()
+            + "_"
+            + melted["Content Name"].astype(str).str.strip()
+            + "_"
+            + melted["Iteration"].astype(str)
+        )
+    else:
+        print(f"[DEBUG] Building Question_Iteration WITHOUT Content Name")
+        melted["Question_Iteration"] = (
+            melted["Question"].astype(str).str.strip()
+            + "_"
+            + melted["Iteration"].astype(str)
+        )
 
     final = melted.pivot_table(
         index=id_cols,
@@ -106,16 +143,35 @@ def process_iterative_files(primary_file, secondary_file, demographics_file=None
     ).reset_index()
     final.columns.name = None
 
+    print(f"[DEBUG] After pivot: shape={final.shape}, 'Content Name' in columns={'Content Name' in final.columns}")
+    if 'Content Name' in final.columns:
+        print(f"[DEBUG] WARNING: Content Name should not be in final columns!")
+    print(f"[DEBUG] First 5 columns: {list(final.columns[:5])}")
+
     # ── Step 6: order columns ──
     base_cols    = [col for col in id_cols if col in final.columns]
     dynamic_cols = [col for col in final.columns if col not in base_cols]
     final = final[base_cols + sort_question_columns(dynamic_cols)]
 
+    # ── Step 7: remove almost-empty columns (sparse iterations) ──
+    n_patients = len(final)
+    cols_to_keep = list(base_cols)
+    
+    for col in final.columns:
+        if col not in base_cols:
+            n_values = final[col].notna().sum()
+            # Keep column if it has at least 10% of patients with data, or at least 2 values
+            threshold_pct = max(2, int(n_patients * 0.10))
+            if n_values >= threshold_pct:
+                cols_to_keep.append(col)
+    
+    final = final[cols_to_keep]
+
     final = merge_demographics(final, demographics_file)
     if any(col in final.columns for col in ["Age", "Sex", "Gender"]):
         demo_cols = [col for col in ["Age", "Sex", "Gender"] if col in final.columns]
         base_cols = [col for col in ["Patient ID"] if col in final.columns]
-        remaining_id_cols = [col for col in ["Pathway Name", "Content Name"] if col in final.columns]
+        remaining_id_cols = [col for col in ["Pathway Name"] if col in final.columns]
         other_cols = [col for col in final.columns if col not in base_cols + demo_cols + remaining_id_cols]
         final = final[base_cols + demo_cols + remaining_id_cols + other_cols]
 

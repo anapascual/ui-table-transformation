@@ -208,7 +208,8 @@ demographics_done = st.session_state.get("demographics_file") is not None
 required_done     = primary_done and secondary_done
 
 # ── Hero ───────────────────────────────────────────────────────────────────────
-logo_path = Path("assets/medtronic_logo.png")
+app_dir = Path(__file__).parent.parent
+logo_path = app_dir / "assets" / "medtronic_logo.png"
 if logo_path.exists():
     logo_b64   = img_to_base64(logo_path)
     logo_inner = f'<img src="data:image/png;base64,{logo_b64}" alt="Medtronic">'
