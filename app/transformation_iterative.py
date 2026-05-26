@@ -2,20 +2,38 @@ import re
 import pandas as pd
 from transformation_common import build_merged_table, merge_demographics
 
+ITERATIVE_CONTENT_NAME_KEYWORDS = [
+    "Allgemeine Gesundheit",  # Globale Gesundheitsumfrage / PROMIS-10
+    "Schmerztagebuch",         # Schmerztagebuch variants
+    "Tagesbericht zuhause",   # Tagesbericht zuhause
+    "BMI",                    # BMI-Daten
+]
+
+
+def _is_iterative_content_name(content_name):
+    content_name = str(content_name or "").strip().lower()
+    return any(keyword.lower() in content_name for keyword in ITERATIVE_CONTENT_NAME_KEYWORDS)
+
 
 def sort_question_columns(cols):
     """Sort columns by questionnaire name first, then question text, then iteration."""
-    def sort_key(col):
-        match = re.match(r"^(.*)_(\d+)$", col)
-        if match:
-            question_part, num = match.groups()
-            qmatch = re.match(r"^(.*)_(.+)$", question_part)
-            if qmatch:
-                question, qname = qmatch.groups()
-                return (qname.strip(), question.strip(), int(num))
-            return ("", question_part.strip(), int(num))
-        return ("", col, 0)
-    return sorted(cols, key=sort_key)
+    def parse_column(col):
+        parts = col.rsplit("_", maxsplit=1)
+        if len(parts) == 2 and parts[1].isdigit():
+            question_part, iteration = parts[0], int(parts[1])
+            question_parts = question_part.rsplit("_", maxsplit=1)
+            if len(question_parts) == 2:
+                question_text, content_name = question_parts
+                return (content_name.strip(), question_text.strip(), iteration)
+            return ("", question_part.strip(), iteration)
+
+        if len(parts) == 2:
+            question_text, content_name = parts
+            return (content_name.strip(), question_text.strip(), 0)
+
+        return ("", col.strip(), 0)
+
+    return sorted(cols, key=parse_column)
 
 
 def _fill_sentinel(series, sentinel_ts, sentinel_str):
@@ -71,12 +89,19 @@ def process_iterative_files(primary_file, secondary_file, demographics_file=None
     if multiple_questionnaires:
         pivot_idx = pivot_idx + ["Content Name"]
 
-    wide_per_event = df_pivot.pivot_table(
-        index=pivot_idx,
-        columns="Question",
-        values="Answer_Combined",
-        aggfunc="first",
-    ).reset_index()
+    event_rows = df_pivot[pivot_idx].drop_duplicates()
+    question_wide = (
+        df_pivot.dropna(subset=["Question"])
+        .pivot_table(
+            index=pivot_idx,
+            columns="Question",
+            values="Answer_Combined",
+            aggfunc="first",
+        )
+        .reset_index()
+    )
+
+    wide_per_event = event_rows.merge(question_wide, on=pivot_idx, how="left")
     wide_per_event.columns.name = None
 
     # Restore sentinels to NaN/NaT
@@ -93,10 +118,13 @@ def process_iterative_files(primary_file, secondary_file, demographics_file=None
             .reset_index(drop=True)
         )
 
-    # ── Step 3: assign iteration number (chronological across all questionnaires) ──
-    # ALWAYS group by id_cols only, so iteration spans all questionnaires for a patient
+    # ── Step 3: assign iteration number per questionnaire event ──
+    # Use Content Name grouping so repeated entries within the same questionnaire
+    # type get their own ordinal number, while non-iterative questionnaires
+    # can still collapse into a single column later.
+    iteration_group = id_cols + (["Content Name"] if has_content_name else [])
     wide_per_event["Iteration"] = (
-        wide_per_event.groupby(id_cols).cumcount() + 1
+        wide_per_event.groupby(iteration_group).cumcount() + 1
     )
 
     # ── Step 4: melt back to long format ──
@@ -113,26 +141,36 @@ def process_iterative_files(primary_file, secondary_file, demographics_file=None
         var_name="Question",
         value_name="Value",
     )
-    melted = melted.dropna(subset=["Value"])
+
+    # Preserve rows with empty values here so unanswered questions still
+    # become columns in the final iterative output.
 
     # ── Step 5: build Question column names ──
-    # ALWAYS include questionnaire name if present, for full disambiguation
+    # Use iteration suffix only for known iterative questionnaires.
     print(f"[DEBUG] Step 5: multiple_questionnaires={multiple_questionnaires}")
-    if multiple_questionnaires:
-        print(f"[DEBUG] Building Question_Iteration WITH Content Name")
+    question = melted["Question"].astype(str).str.strip()
+    if has_content_name and multiple_questionnaires:
+        print(f"[DEBUG] Building Question_Iteration using Content Name, iterative content names will keep iteration")
+        content_name = melted["Content Name"].astype(str).str.strip()
+        melted["Question_Iteration"] = question + "_" + content_name
+
+        iterative_mask = melted["Content Name"].apply(_is_iterative_content_name)
+        if iterative_mask.any():
+            melted.loc[iterative_mask, "Question_Iteration"] = (
+                melted.loc[iterative_mask, "Question_Iteration"]
+                + "_"
+                + melted.loc[iterative_mask, "Iteration"].astype(str)
+            )
+        print(f"[DEBUG] Iterative rows: {iterative_mask.sum()}, non-iterative rows: {(~iterative_mask).sum()}")
+    elif has_content_name:
+        print(f"[DEBUG] Building Question_Iteration WITHOUT Content Name for single questionnaire")
         melted["Question_Iteration"] = (
-            melted["Question"].astype(str).str.strip()
-            + "_"
-            + melted["Content Name"].astype(str).str.strip()
-            + "_"
-            + melted["Iteration"].astype(str)
+            question + "_" + melted["Iteration"].astype(str)
         )
     else:
         print(f"[DEBUG] Building Question_Iteration WITHOUT Content Name")
         melted["Question_Iteration"] = (
-            melted["Question"].astype(str).str.strip()
-            + "_"
-            + melted["Iteration"].astype(str)
+            question + "_" + melted["Iteration"].astype(str)
         )
 
     final = melted.pivot_table(
@@ -153,19 +191,11 @@ def process_iterative_files(primary_file, secondary_file, demographics_file=None
     dynamic_cols = [col for col in final.columns if col not in base_cols]
     final = final[base_cols + sort_question_columns(dynamic_cols)]
 
-    # ── Step 7: remove almost-empty columns (sparse iterations) ──
-    n_patients = len(final)
-    cols_to_keep = list(base_cols)
-    
-    for col in final.columns:
-        if col not in base_cols:
-            n_values = final[col].notna().sum()
-            # Keep column if it has at least 10% of patients with data, or at least 2 values
-            threshold_pct = max(2, int(n_patients * 0.10))
-            if n_values >= threshold_pct:
-                cols_to_keep.append(col)
-    
-    final = final[cols_to_keep]
+    # ── Step 7: preserve all question columns ──
+    # Keep blank columns for rare or unanswered questionnaires so the
+    # output schema remains stable and empty questionnaire columns still appear.
+    #
+    # Note: columns are already ordered above; do not drop sparse iteration columns.
 
     final = merge_demographics(final, demographics_file)
     if any(col in final.columns for col in ["Age", "Sex", "Gender"]):
