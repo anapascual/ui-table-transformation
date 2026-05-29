@@ -83,15 +83,20 @@ class TestAnswerPreservation(unittest.TestCase):
             
             result = ti.process_iterative_files(content_path, answers_path)
             
-            # Should have 3 columns: Patient ID, Pathway Name, Q_Allgemeine Gesundheit_1, Q_Allgemeine Gesundheit_2, Q_Allgemeine Gesundheit_3
-            expected_cols = {'Patient ID', 'Pathway Name', 'Q_Allgemeine Gesundheit_1', 'Q_Allgemeine Gesundheit_2', 'Q_Allgemeine Gesundheit_3'}
+            # Column naming: {ContentName}_{Question}_{iteration}
+            expected_cols = {
+                'Patient ID', 'Pathway Name',
+                'Allgemeine Gesundheit_Q_1',
+                'Allgemeine Gesundheit_Q_2',
+                'Allgemeine Gesundheit_Q_3',
+            }
             self.assertTrue(expected_cols.issubset(set(result.columns)), f"Missing expected columns. Got: {set(result.columns)}")
-            
-            # Each should have the correct answer
+
+            # Each iteration should carry the correct answer value
             row = result.iloc[0]
-            self.assertEqual(row['Q_Allgemeine Gesundheit_1'], 'A1')
-            self.assertEqual(row['Q_Allgemeine Gesundheit_2'], 'A2')
-            self.assertEqual(row['Q_Allgemeine Gesundheit_3'], 'A3')
+            self.assertEqual(row['Allgemeine Gesundheit_Q_1'], 'A1')
+            self.assertEqual(row['Allgemeine Gesundheit_Q_2'], 'A2')
+            self.assertEqual(row['Allgemeine Gesundheit_Q_3'], 'A3')
 
 
 class TestColumnNameStability(unittest.TestCase):
@@ -142,8 +147,9 @@ class TestColumnNameStability(unittest.TestCase):
             
             result = ti.process_iterative_files(content_path, answers_path)
             
-            # Column name should be clean: 'Q1_TestContent' (not '  Q1  ?  _TestContent')
-            self.assertIn('Q1_TestContent', result.columns)
+            # Column name: {ContentName}_{Question}_{N}, whitespace normalised
+            # '  Q1  ?  ' → 'Q1 ?' (stripped + collapsed); full name: 'TestContent_Q1 ?_1'
+            self.assertIn('TestContent_Q1 ?_1', result.columns)
 
 
 class TestValidation(unittest.TestCase):

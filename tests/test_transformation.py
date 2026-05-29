@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 import transformation_iterative as ti
 
 class TransformationIterativeTest(unittest.TestCase):
-    def test_non_iterative_questionnaire_collapses_to_single_column(self):
+    def test_all_questionnaires_get_iteration_numbers(self):
+        """All questions use {ContentName}_{Question}_{N} naming — no distinction between iterative and non-iterative."""
         with tempfile.TemporaryDirectory() as tmpdir:
             content_path = os.path.join(tmpdir, 'content.csv')
             answers_path = os.path.join(tmpdir, 'answers.csv')
@@ -32,10 +33,12 @@ class TransformationIterativeTest(unittest.TestCase):
 
             result = ti.process_iterative_files(content_path, answers_path)
 
-            self.assertIn('Q1_NonIterative', result.columns)
-            self.assertNotIn('Q1_NonIterative_1', result.columns)
-            self.assertIn('Q2_Allgemeine Gesundheit_1', result.columns)
-            self.assertIn('Q2_Allgemeine Gesundheit_2', result.columns)
+            # Both questionnaires get _N iteration suffixes
+            self.assertIn('NonIterative_Q1_1', result.columns)
+            self.assertIn('NonIterative_Q1_2', result.columns)
+            self.assertIn('Allgemeine Gesundheit_Q2_1', result.columns)
+            self.assertIn('Allgemeine Gesundheit_Q2_2', result.columns)
+            # One unique patient-pathway combination → one row
             self.assertEqual(result.shape[0], 1)
 
 if __name__ == '__main__':

@@ -1,10 +1,7 @@
-import re
 import pandas as pd
-from pathlib import Path
 from transformation_common import (
-    build_merged_table, 
-    merge_demographics, 
-    read_input_file, 
+    merge_demographics,
+    read_input_file,
     clean_columns,
     normalize_datetime_column,
     require_columns,
@@ -12,249 +9,171 @@ from transformation_common import (
 )
 
 ITERATIVE_CONTENT_NAME_KEYWORDS = [
-    "Allgemeine Gesundheit",  # Globale Gesundheitsumfrage / PROMIS-10
-    "Schmerztagebuch",         # Schmerztagebuch variants
-    "Tagesbericht zuhause",   # Tagesbericht zuhause
-    "BMI",                    # BMI-Daten
+    "Allgemeine Gesundheit",
+    "Schmerztagebuch",
+    "Tagesbericht zuhause",
+    "BMI",
 ]
-
-
-def _is_iterative_content_name(content_name):
-    content_name = str(content_name or "").strip().lower()
-    return any(keyword.lower() in content_name for keyword in ITERATIVE_CONTENT_NAME_KEYWORDS)
 
 
 def sort_question_columns(cols):
     """
-    Sort columns by:
-    1. Content Name (questionnaire name)
-    2. Question text
-    3. Iteration number
-    
-    This groups related questions together.
+    Sort columns by base name then by numeric iteration suffix.
+    Columns named {ContentName}_{Question}_{N} are grouped by their
+    base (everything before the trailing _N) then ordered by N.
     """
     def parse_column(col):
         col = str(col).strip()
-        # Try to extract iteration number from end
         parts = col.rsplit("_", maxsplit=1)
-        iteration = 0
         if len(parts) == 2 and parts[1].isdigit():
-            iteration = int(parts[1])
-            col = parts[0]
-        
-        # Try to extract content name (last part after final underscore if present)
-        content_name = ""
-        question_text = col
-        parts = col.rsplit("_", maxsplit=1)
-        if len(parts) == 2:
-            question_text, content_name = parts
-        
-        return (content_name.strip(), question_text.strip(), iteration)
+            return (parts[0], int(parts[1]))
+        return (col, 0)
 
     return sorted(cols, key=parse_column)
 
 
-def _fill_sentinel(series, sentinel_ts, sentinel_str):
-    """Fill NaN/NaT regardless of whether the column is datetime or object/str."""
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return series.fillna(sentinel_ts)
-    else:
-        return series.fillna(sentinel_str)
-
-
-def _restore_sentinel(series, sentinel_ts, sentinel_str):
-    """Put NaN/NaT back after pivot."""
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return series.replace(sentinel_ts, pd.NaT)
-    else:
-        return series.replace(sentinel_str, pd.NA)
-
-
 def process_iterative_files(primary_file, secondary_file, demographics_file=None, output_file=None):
     """
-    Iterative questionnaire workflow with proper handling of non-responders and repeated questions.
-    
-    This workflow:
-    1. Builds base from primary_file (all expected patient-pathway combinations)
-    2. Left-joins answers from secondary_file
-    3. Preserves rows for non-responders (blank answer columns)
-    4. Handles repeated/iterative questions with iteration numbers
-    5. Validates output coverage and integrity
+    Iterative questionnaire workflow.
 
-    Output: one row per patient-pathway, with repeated question answers suffixed
-    _1, _2, _3 … in chronological order by Entry Date.
-    
-    When there are multiple questionnaires (Content Name varies):
-    - Column names include the questionnaire name: Question_QuestionnaireName_1
-    When there is only one questionnaire:
-    - Column names use simple iteration: Question_1, Question_2
+    Output: one row per unique Patient ID + Pathway Name from the content
+    file.  Repeated answers for the same question are placed in separate
+    columns suffixed _1, _2, _3 … ordered chronologically by Entry Date.
 
-    Rows where Scheduled date (or any other date) is missing are fully
-    preserved — NaT/NaN is replaced with a sentinel before pivoting so
-    pandas does not silently discard those rows.
+    Column naming: {Content Name}_{Question}_{iteration_number}
+
+    Non-responders (patients in the content file with no answers) are
+    preserved as rows with blank answer columns.
     """
-    df = build_merged_table(primary_file, secondary_file)
+    print("\n[INFO] Starting iterative transformation...")
 
-    id_cols   = [col for col in ["Patient ID", "Pathway Name"] if col in df.columns]
-    date_cols = [col for col in ["Scheduled date", "Entry Date"] if col in df.columns]
-    
-    # Detect if there are multiple questionnaires
-    has_content_name = "Content Name" in df.columns
-    multiple_questionnaires = has_content_name and (df.groupby(id_cols)["Content Name"].nunique() > 1).any()
+    # ── Step 1: Read and clean files ──────────────────────────────────────
+    content = clean_columns(read_input_file(primary_file))
+    answers = clean_columns(read_input_file(secondary_file))
 
-    SENTINEL_TS  = pd.Timestamp("1900-01-01")
-    SENTINEL_STR = "___MISSING___"
+    if "Input date" in content.columns:
+        content = content.rename(columns={"Input date": "Entry Date"})
+    if "Input date" in answers.columns:
+        answers = answers.rename(columns={"Input date": "Entry Date"})
 
-    # ── Step 1: pivot to one row per event, keeping NaN rows via sentinel ──
-    df_pivot = df.copy()
-    for col in date_cols:
-        df_pivot[col] = _fill_sentinel(df_pivot[col], SENTINEL_TS, SENTINEL_STR)
+    normalize_datetime_column(content, "Entry Date")
+    normalize_datetime_column(answers, "Entry Date")
+    normalize_datetime_column(content, "Scheduled date")
+    normalize_datetime_column(answers, "Scheduled date")
 
-    pivot_idx = id_cols + date_cols
-    if multiple_questionnaires:
-        pivot_idx = pivot_idx + ["Content Name"]
+    require_columns(content, ["Patient ID", "Pathway Name"], "Content/Primary input file")
+    require_columns(answers, ["Patient ID", "Pathway Name", "Content Name", "Question"],
+                    "Answers/Secondary input file")
 
-    event_rows = df_pivot[pivot_idx].drop_duplicates()
-    question_wide = (
-        df_pivot.dropna(subset=["Question"])
-        .pivot_table(
-            index=pivot_idx,
-            columns="Question",
-            values="Answer_Combined",
-            aggfunc="first",
+    for col in ["Patient ID", "Pathway Name", "Content Name", "Question"]:
+        if col in content.columns:
+            content[col] = content[col].astype(str).str.strip()
+        if col in answers.columns:
+            answers[col] = answers[col].astype(str).str.strip()
+
+    print(f"[INFO] Content file: {content.shape[0]} rows")
+    print(f"[INFO] Answers file: {answers.shape[0]} rows")
+
+    # ── Step 2: Build base from content (unique Patient ID + Pathway Name) ─
+    id_cols = ["Patient ID", "Pathway Name"]
+    base = content[id_cols].drop_duplicates().copy()
+
+    if demographics_file:
+        base = merge_demographics(base, demographics_file)
+
+    print(f"[INFO] Base rows (unique patient-pathway combinations): {len(base)}")
+
+    # ── Step 3: Prepare answers ────────────────────────────────────────────
+    answers_clean = answers.dropna(
+        subset=["Patient ID", "Pathway Name", "Content Name", "Question"], how="any"
+    ).copy()
+
+    # Normalise Content Name and Question: strip + collapse internal whitespace
+    for col in ["Content Name", "Question"]:
+        answers_clean[col] = (
+            answers_clean[col]
+            .astype(str)
+            .str.strip()
+            .str.replace(r"\s+", " ", regex=True)
         )
-        .reset_index()
-    )
 
-    wide_per_event = event_rows.merge(question_wide, on=pivot_idx, how="left")
-    wide_per_event.columns.name = None
+    # Combine Answer Value and Answer Text into a single column
+    answers_clean["Answer_Combined"] = pd.NA
+    if "Answer Value" in answers_clean.columns:
+        answers_clean["Answer_Combined"] = answers_clean["Answer Value"]
+    if "Answer Text" in answers_clean.columns:
+        answers_clean["Answer_Combined"] = answers_clean["Answer_Combined"].fillna(
+            answers_clean["Answer Text"]
+        )
 
-    # Restore sentinels to NaN/NaT
-    for col in date_cols:
-        wide_per_event[col] = _restore_sentinel(wide_per_event[col], SENTINEL_TS, SENTINEL_STR)
-
-    # ── Step 2: sort by Entry Date (NaT last) so iteration order follows time ──
-    sort_key_col = "Entry Date" if "Entry Date" in wide_per_event.columns else (date_cols[0] if date_cols else None)
-    if sort_key_col:
-        sort_cols = id_cols + ([sort_key_col] if sort_key_col else [])
-        wide_per_event = (
-            wide_per_event
-            .sort_values(sort_cols, na_position="last")
+    # ── Step 4: Sort by Entry Date and assign iteration numbers ───────────
+    sort_key = ["Patient ID", "Pathway Name", "Content Name", "Question"]
+    if "Entry Date" in answers_clean.columns:
+        answers_clean = (
+            answers_clean
+            .sort_values(sort_key + ["Entry Date"], na_position="last")
             .reset_index(drop=True)
         )
 
-    # ── Step 3: assign iteration number per questionnaire event ──
-    # Use Content Name grouping so repeated entries within the same questionnaire
-    # type get their own ordinal number, while non-iterative questionnaires
-    # can still collapse into a single column later.
-    iteration_group = id_cols + (["Content Name"] if has_content_name else [])
-    wide_per_event["Iteration"] = (
-        wide_per_event.groupby(iteration_group).cumcount() + 1
+    answers_clean["iteration"] = (
+        answers_clean
+        .groupby(["Patient ID", "Pathway Name", "Content Name", "Question"])
+        .cumcount()
+        .add(1)
     )
 
-    # ── Step 4: melt back to long format ──
-    melt_id_vars = id_cols + ["Iteration"]
-    if multiple_questionnaires:
-        melt_id_vars = melt_id_vars + ["Content Name"]
-    
-    non_value_cols = set(melt_id_vars + date_cols)
-    value_cols = [col for col in wide_per_event.columns if col not in non_value_cols]
-
-    melted = wide_per_event.melt(
-        id_vars=melt_id_vars,
-        value_vars=value_cols,
-        var_name="Question",
-        value_name="Value",
+    # ── Step 5: Build stable column names: {Content Name}_{Question}_{N} ──
+    answers_clean["question_column"] = (
+        answers_clean["Content Name"].astype(str).str.strip()
+        + "_"
+        + answers_clean["Question"].astype(str).str.strip()
+        + "_"
+        + answers_clean["iteration"].astype(str)
     )
 
-    # Preserve rows with empty values here so unanswered questions still
-    # become columns in the final iterative output.
+    print(f"[INFO] Unique question columns: {answers_clean['question_column'].nunique()}")
 
-    # ── Step 5: build Question column names ──
-    # Use iteration suffix only for known iterative questionnaires.
-    print(f"[DEBUG] Step 5: multiple_questionnaires={multiple_questionnaires}")
-    question = melted["Question"].astype(str).str.strip()
-    if has_content_name and multiple_questionnaires:
-        print(f"[DEBUG] Building Question_Iteration using Content Name, iterative content names will keep iteration")
-        content_name = melted["Content Name"].astype(str).str.strip()
-        melted["Question_Iteration"] = question + "_" + content_name
-
-        iterative_mask = melted["Content Name"].apply(_is_iterative_content_name)
-        if iterative_mask.any():
-            melted.loc[iterative_mask, "Question_Iteration"] = (
-                melted.loc[iterative_mask, "Question_Iteration"]
-                + "_"
-                + melted.loc[iterative_mask, "Iteration"].astype(str)
-            )
-        print(f"[DEBUG] Iterative rows: {iterative_mask.sum()}, non-iterative rows: {(~iterative_mask).sum()}")
-    elif has_content_name:
-        print(f"[DEBUG] Building Question_Iteration WITHOUT Content Name for single questionnaire")
-        melted["Question_Iteration"] = (
-            question + "_" + melted["Iteration"].astype(str)
-        )
-    else:
-        print(f"[DEBUG] Building Question_Iteration WITHOUT Content Name")
-        melted["Question_Iteration"] = (
-            question + "_" + melted["Iteration"].astype(str)
-        )
-
-    final = melted.pivot_table(
-        index=id_cols,
+    # ── Step 6: Pivot answers to wide format ──────────────────────────────
+    answers_wide = answers_clean.pivot_table(
+        index=["Patient ID", "Pathway Name"],
         columns="question_column",
         values="Answer_Combined",
-        aggfunc="first"
+        aggfunc="first",
     ).reset_index()
     answers_wide.columns.name = None
-    
+
     print(f"[INFO] Answer columns created: {len(answers_wide.columns) - len(id_cols)}")
-    
-    # ─────────────────────────────────────────────────────────────
-    # STEP 8: Left join answers onto base (preserves non-responders)
-    # ─────────────────────────────────────────────────────────────
-    
+
+    # ── Step 7: Left join onto base (preserves non-responders) ───────────
     final = pd.merge(base, answers_wide, on=id_cols, how="left")
-    
+
     print(f"[INFO] Final output rows: {final.shape[0]}")
     print(f"[INFO] Final output columns: {final.shape[1]}")
-    
-    # ─────────────────────────────────────────────────────────────
-    # STEP 9: Order columns
-    # ─────────────────────────────────────────────────────────────
-    
-    base_cols = [col for col in id_cols if col in final.columns]
-    date_cols = [col for col in ["Entry Date", "Scheduled date"] if col in final.columns]
+
+    # ── Step 8: Order columns ─────────────────────────────────────────────
+    base_id_cols = [col for col in id_cols if col in final.columns]
     demo_cols = [col for col in ["Age", "Sex", "Gender"] if col in final.columns]
-    dynamic_cols = [col for col in final.columns 
-                    if col not in base_cols + date_cols + demo_cols]
-    
-    final = final[
-        base_cols + demo_cols + date_cols + sort_question_columns(dynamic_cols)
-    ]
-    
-    # ─────────────────────────────────────────────────────────────
-    # STEP 10: Validation checks
-    # ─────────────────────────────────────────────────────────────
-    
+    dynamic_cols = [col for col in final.columns if col not in base_id_cols + demo_cols]
+
+    final = final[base_id_cols + demo_cols + sort_question_columns(dynamic_cols)]
+
+    # ── Step 9: Validation ────────────────────────────────────────────────
     print("\n[INFO] Running validation checks...")
     try:
-        validate_transformation_output(content, answers, final)
+        validate_transformation_output(content, answers_clean, final)
     except ValueError as e:
         print(f"[ERROR] Validation failed: {e}")
         raise
-    
-    # Check for duplicate columns
+
     duplicates = final.columns[final.columns.duplicated()].tolist()
     if duplicates:
         raise ValueError(f"Duplicate columns detected: {duplicates}")
-    
-    # ─────────────────────────────────────────────────────────────
-    # STEP 11: Export to CSV
-    # ─────────────────────────────────────────────────────────────
-    
+
+    # ── Step 10: Export ───────────────────────────────────────────────────
     if output_file:
         final.to_csv(output_file, index=False, encoding="utf-8-sig")
         print(f"\n[INFO] Output saved to: {output_file}")
-    
+
     print(f"[INFO] Transformation complete!\n")
-    
+
     return final
