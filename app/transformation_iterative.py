@@ -15,6 +15,26 @@ def _is_iterative_content_name(content_name):
     return any(keyword.lower() in content_name for keyword in ITERATIVE_CONTENT_NAME_KEYWORDS)
 
 
+def normalize_question_text(question):
+    """
+    Normalize question text to handle minor variations:
+    - Remove trailing punctuation (?, !, .)
+    - Strip whitespace
+    - Handle NaN/None values
+    
+    This ensures questions like:
+      'Wurde das Prä-operative Blutbild erhoben (inkl. Bluttyp & Ferritin/Transferrin)'
+      'Wurde das Prä-operative Blutbild erhoben (inkl. Bluttyp & Ferritin/Transferrin)?'
+    are recognized as the same question.
+    """
+    if pd.isna(question):
+        return pd.NA
+    question = str(question).strip()
+    # Remove trailing punctuation (?, !, .)
+    question = re.sub(r'[?!.]+$', '', question).strip()
+    return question
+
+
 def sort_question_columns(cols):
     """Sort columns by questionnaire name first, then question text, then iteration."""
     def parse_column(col):
@@ -69,6 +89,10 @@ def process_iterative_files(primary_file, secondary_file, demographics_file=None
     pandas does not silently discard those rows.
     """
     df = build_merged_table(primary_file, secondary_file)
+    
+    # Normalize question text to handle minor variations (e.g., missing ?)
+    if "Question" in df.columns:
+        df["Question"] = df["Question"].apply(normalize_question_text)
 
     id_cols   = [col for col in ["Patient ID", "Pathway Name"] if col in df.columns]
     date_cols = [col for col in ["Scheduled date", "Entry Date"] if col in df.columns]
@@ -122,7 +146,7 @@ def process_iterative_files(primary_file, secondary_file, demographics_file=None
     # Use Content Name grouping so repeated entries within the same questionnaire
     # type get their own ordinal number, while non-iterative questionnaires
     # can still collapse into a single column later.
-    iteration_group = id_cols + (["Content Name"] if has_content_name else [])
+    iteration_group = id_cols + (["Content Name"] if multiple_questionnaires else [])
     wide_per_event["Iteration"] = (
         wide_per_event.groupby(iteration_group).cumcount() + 1
     )
